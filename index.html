@@ -25730,11 +25730,17 @@ function startHandoff(format, mode){
   var st = collectHandoffState();
   st.format = format;
   st.mode = mode || 'all';
-  var stored = false;
-  try { localStorage.setItem(HANDOFF_KEY, JSON.stringify(st)); stored = true; } catch(e){}
+  var json = JSON.stringify(st);
+  // 상태는 URL 해시로 전달한다. 노션 등의 임베드 iframe은 브라우저의 서드파티
+  // 저장소 파티셔닝 때문에 localStorage가 새 탭(최상위 창)과 공유되지 않는다.
+  // 해시는 서버로 전송되지 않고 파티셔닝의 영향도 받지 않는다.
+  var payload = null;
+  try { payload = btoa(unescape(encodeURIComponent(json))); } catch(e){}
   var base = location.href.split('#')[0];
-  // localStorage 불가 환경(샌드박스 제약)이면 URL 해시로 상태 전달
-  var url = stored ? base + '#fdg-handoff' : base + '#fdg-handoff=' + encodeURIComponent(JSON.stringify(st));
+  var url = payload
+    ? base + '#fdg-handoff=b64.' + payload
+    : base + '#fdg-handoff=' + encodeURIComponent(json);
+  try { localStorage.setItem(HANDOFF_KEY, json); } catch(e){} // 동일 파티션 환경 대비 보조 저장
   var w = null;
   try { w = window.open(url, '_blank'); } catch(e){}
   showHandoffNotice(url, !!w);
@@ -25757,10 +25763,19 @@ function showHandoffNotice(url, opened){
 function consumeHandoff(){
   if(IS_EMBEDDED) return; // 최상위 창(새 탭)에서만 복원
   var st = null;
-  var h = location.hash || '';
-  if(h.indexOf('#fdg-handoff=') === 0){
-    try { st = JSON.parse(decodeURIComponent(h.substring('#fdg-handoff='.length))); } catch(e){}
-  } else if(h === '#fdg-handoff'){
+  // location.hash는 브라우저별 디코딩 차이가 있어 href에서 직접 파싱한다
+  var parts = location.href.split('#');
+  var h = parts.length > 1 ? parts.slice(1).join('#') : '';
+  if(h.indexOf('fdg-handoff=') === 0){
+    var payload = h.substring('fdg-handoff='.length);
+    try {
+      if(payload.indexOf('b64.') === 0){
+        st = JSON.parse(decodeURIComponent(escape(atob(payload.substring(4)))));
+      } else {
+        st = JSON.parse(decodeURIComponent(payload));
+      }
+    } catch(e){}
+  } else if(h === 'fdg-handoff'){
     try { var raw = localStorage.getItem(HANDOFF_KEY); if(raw) st = JSON.parse(raw); } catch(e){}
   }
   if(!st) return;
