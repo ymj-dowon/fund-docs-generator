@@ -25651,6 +25651,13 @@ function cancelExport(){
 }
 
 function doExport(format){
+  // 노션 등 임베드(iframe) 안에서는 브라우저 샌드박스가 다운로드·인쇄를 차단하므로
+  // 입력 상태를 저장하고 새 탭에서 이어서 내보낸다
+  if(IS_EMBEDDED){
+    startHandoff(format, _exportMode || 'all');
+    cancelExport();
+    return;
+  }
   if(format === 'pdf'){
     if(_exportMode === 'current') printCurrent();
     else printAll();
@@ -25659,6 +25666,136 @@ function doExport(format){
   }
   cancelExport();
 }
+
+// ==================== 임베드(노션 등) 새 탭 이어가기 ====================
+var IS_EMBEDDED = (function(){ try { return window.self !== window.top; } catch(e){ return true; } })();
+var HANDOFF_KEY = 'fdg_handoff_v5';
+var JC_CLS = ['jc-name','jc-ceo','jc-bizreg','jc-addr','jc-amt','jc-emp','jc-emppos','jc-emp-birth','jc-emp-dept','jc-emp-hire','jc-wrk','jc-wrkpos','jc-wrk-birth','jc-wrk-dept','jc-wrk-hire'];
+
+function collectHandoffState(){
+  var st = {v:5, ts:Date.now(), fields:{}, bizItems:[], jointCards:[]};
+  document.querySelectorAll('.sidebar input[id], .sidebar select[id], .sidebar textarea[id]').forEach(function(el){
+    if(el.type === 'checkbox') st.fields[el.id] = el.checked ? '1' : '';
+    else st.fields[el.id] = el.value;
+  });
+  document.querySelectorAll('#bizItems .biz-row').forEach(function(r){
+    st.bizItems.push({ name: r.querySelector('.biz-name').value, amt: r.querySelector('.biz-amt').value });
+  });
+  document.querySelectorAll('#jointCompanies .jc-card').forEach(function(card){
+    var o = {};
+    JC_CLS.forEach(function(c){ var el = card.querySelector('.'+c); o[c] = el ? el.value : ''; });
+    st.jointCards.push(o);
+  });
+  var activePane = document.querySelector('.tab-pane.active');
+  st.activeTab = activePane ? activePane.id : 'tab-list';
+  return st;
+}
+
+function applyHandoffState(st){
+  // 1) 기금 유형 먼저 반영 (공동 모드 UI·기본 카드 구성)
+  if(st.fields && st.fields.fundType){
+    document.getElementById('fundType').value = st.fields.fundType;
+    onFundTypeChange();
+  }
+  // 2) 참여회사 카드 수 맞추고 값 채우기
+  if(st.jointCards && st.jointCards.length){
+    var container = document.getElementById('jointCompanies');
+    while(container.children.length < st.jointCards.length) addJointCompany();
+    while(container.children.length > Math.max(st.jointCards.length, 2)) container.removeChild(container.lastElementChild);
+    renumberJointCards();
+    document.querySelectorAll('#jointCompanies .jc-card').forEach(function(card, i){
+      var o = st.jointCards[i]; if(!o) return;
+      JC_CLS.forEach(function(c){ var el = card.querySelector('.'+c); if(el && o[c] !== undefined) el.value = o[c]; });
+    });
+  }
+  // 3) 일반 필드 복원
+  Object.keys(st.fields || {}).forEach(function(id){
+    if(id === 'fundType') return;
+    var el = document.getElementById(id); if(!el) return;
+    if(el.type === 'checkbox') el.checked = !!st.fields[id];
+    else el.value = st.fields[id];
+  });
+  if(typeof toggleCertForm === 'function') toggleCertForm();
+  // 4) 목적사업 항목 재구성
+  if(st.bizItems && st.bizItems.length){
+    var bc = document.getElementById('bizItems');
+    bc.innerHTML = '';
+    st.bizItems.forEach(function(it){ addBizItem(it.name, parseNum(it.amt)); });
+  }
+  updateJointTotal();
+  updateBizTotal();
+}
+
+function startHandoff(format, mode){
+  var st = collectHandoffState();
+  st.format = format;
+  st.mode = mode || 'all';
+  var stored = false;
+  try { localStorage.setItem(HANDOFF_KEY, JSON.stringify(st)); stored = true; } catch(e){}
+  var base = location.href.split('#')[0];
+  // localStorage 불가 환경(샌드박스 제약)이면 URL 해시로 상태 전달
+  var url = stored ? base + '#fdg-handoff' : base + '#fdg-handoff=' + encodeURIComponent(JSON.stringify(st));
+  var w = null;
+  try { w = window.open(url, '_blank'); } catch(e){}
+  showHandoffNotice(url, !!w);
+}
+
+function showHandoffNotice(url, opened){
+  var old = document.getElementById('fdgHandoffNotice');
+  if(old) old.remove();
+  var div = document.createElement('div');
+  div.id = 'fdgHandoffNotice';
+  div.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#fef3c7;border-bottom:1px solid #f59e0b;padding:10px 16px;font-size:13px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;';
+  div.innerHTML = (opened
+    ? '📄 새 탭에서 내보내기를 이어갑니다. 새 탭이 열리지 않았다면 오른쪽 버튼을 눌러주세요.'
+    : '📄 임베드 환경에서는 파일 저장이 차단됩니다. 오른쪽 버튼을 눌러 새 탭에서 이어서 내보내주세요.')
+    + '<a href="' + url + '" target="_blank" rel="noopener" style="background:#2563eb;color:#fff;padding:5px 12px;border-radius:6px;text-decoration:none;font-weight:600;">새 탭에서 계속하기</a>'
+    + '<button onclick="this.parentElement.remove()" style="margin-left:auto;border:none;background:none;cursor:pointer;font-size:15px;color:#92400e;">&times;</button>';
+  document.body.appendChild(div);
+}
+
+function consumeHandoff(){
+  if(IS_EMBEDDED) return; // 최상위 창(새 탭)에서만 복원
+  var st = null;
+  var h = location.hash || '';
+  if(h.indexOf('#fdg-handoff=') === 0){
+    try { st = JSON.parse(decodeURIComponent(h.substring('#fdg-handoff='.length))); } catch(e){}
+  } else if(h === '#fdg-handoff'){
+    try { var raw = localStorage.getItem(HANDOFF_KEY); if(raw) st = JSON.parse(raw); } catch(e){}
+  }
+  if(!st) return;
+  try { localStorage.removeItem(HANDOFF_KEY); } catch(e){}
+  if(st.ts && (Date.now() - st.ts) > 10*60*1000) return; // 10분 경과분 무시
+  try { history.replaceState(null, '', location.pathname + location.search); } catch(e){}
+  applyHandoffState(st);
+  generateAll();
+  if(st.activeTab){
+    document.querySelectorAll('.tab-bar button').forEach(function(b){
+      if((b.getAttribute('onclick')||'').indexOf("'"+st.activeTab+"'") >= 0) b.click();
+    });
+  }
+  _exportMode = st.mode || 'all';
+  // 사용자가 임베드에서 누른 내보내기를 자동 실행
+  setTimeout(function(){
+    if(st.format === 'pdf'){
+      if(_exportMode === 'current') printCurrent(); else printAll();
+    } else if(st.format === 'word'){
+      exportWord(_exportMode);
+    }
+    _exportMode = '';
+  }, 400);
+}
+
+document.addEventListener('DOMContentLoaded', function(){
+  if(IS_EMBEDDED){
+    var note = document.createElement('div');
+    note.style.cssText = 'background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;padding:8px 10px;font-size:11px;line-height:1.5;color:#92400e;margin-bottom:12px;';
+    note.textContent = '📌 노션 임베드 모드: 내보내기(PDF/Word)를 누르면 입력 내용을 그대로 가지고 새 탭에서 저장이 진행됩니다.';
+    var sb = document.querySelector('.sidebar');
+    if(sb) sb.insertBefore(note, sb.firstChild);
+  }
+  consumeHandoff();
+});
 
 // ==================== Word 내보내기 (docx.js 브라우저 전용) ====================
 function exportWord(mode){
