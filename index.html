@@ -25046,16 +25046,18 @@ function genPlan(ctx){
 
   let totalExpense = totalBiz + totalAdmin;
 
-  // 수입 = 이자수익 + 고유목적사업준비금2 전입수입(보통재산 전액)
-  let gopIncome = fund80;
+  // 수입 = 이자수익 + 고유목적사업준비금 전입수입(사용액만 전입: 준비금2 → 부족분만 준비금1)
+  // [v5.2] 법인세법 제29조 제3항의 상계 논리에 맞춰 실제 지출 예정액만 목적사업회계로 전입.
+  //        잔여 이자수익은 기금관리회계에서 준비금1 전입비용(설정)으로만 처리하고 재순환시키지 않음.
+  let used2 = Math.min(totalExpense, fund80);                          // 준비금2 전입수입(사용액)
+  let used1 = Math.min(Math.max(totalExpense - fund80, 0), interest);  // 준비금1 전입수입(부족분만)
+  let gopIncome = used1 + used2;
   let totalIncome = interest + gopIncome;
-  let surplus = totalIncome - totalExpense; // 잉여금 → 고유목적사업준비금I 설정
 
   // 요약 추정손익계산서: 상세 추정손익계산서의 계 합계와 일치 (당기순이익 0 구조)
-  let gopSetting = surplus > 0 ? surplus : 0;          // 고유목적사업준비금 설정액
-  let plCost = totalExpense + gopSetting + interest;   // 사업비+관리비+준비금설정액+준비금1 전입비용
-  let plIncome = totalIncome + interest;               // 이자수익+준비금1·2 전입수입
-  let plNet = plIncome - plCost;                       // 정상 케이스 0
+  let plCost = totalExpense + interest;                // 사업비+관리비+준비금1 전입비용(이자 전액 설정)
+  let plIncome = totalIncome;                          // 이자수익+준비금 전입수입(사용액)
+  let plNet = plIncome - plCost;                       // 정상 케이스 0 (재원 부족 시 음수)
 
   // 자본예산
   let gopA = interest;
@@ -25180,9 +25182,13 @@ function genPlanDetail(ctx){
   let bizItems = getBizItems();
   let totalBiz = 0; bizItems.forEach(function(it){ totalBiz += it.amount; });
   let totalExpense = totalBiz + totalAdmin;
-  let gopIncome = fund80;
+  // [v5.2] 사용액만 전입: 준비금2(보통재산)부터 전입, 부족분만 준비금1(이자)에서 전입
+  let used2 = Math.min(totalExpense, fund80);
+  let used1 = Math.min(Math.max(totalExpense - fund80, 0), interest);
+  let gopIncome = used1 + used2;
   let totalIncome = interest + gopIncome;
-  let surplus = totalIncome - totalExpense;
+  let surplus = totalIncome - totalExpense; // 잔여 이자수익 → 준비금I 설정계획(기금관리회계)
+  let shortage = totalExpense - (fund80 + interest); // >0이면 재원 부족
 
   let h2 = `
   <div style="page-break-before:always;"></div>
@@ -25194,8 +25200,10 @@ function genPlanDetail(ctx){
     <tr><th>구분</th><th>항목</th><th>세부내용</th><th>금액</th><th>산출근거</th></tr>
     <tr><td rowspan="2">사업수익</td><td rowspan="2">이자수익</td><td></td><td class="right">${fmtNum(interest)}</td><td></td></tr>
     <tr><td>예금이자</td><td class="right">${fmtNum(interest)}</td><td class="left">기본재산(${fmtNum(fund20)}) × 2%</td></tr>
-    <tr><td rowspan="2">사업외수익</td><td rowspan="2">고유목적사업준비금II 전입수입</td><td></td><td class="right">${fmtNum(gopIncome)}</td><td></td></tr>
-    <tr><td></td><td class="right">${fmtNum(gopIncome)}</td><td class="left">출연금(${fmtNum(fund)}) × 80%</td></tr>
+    <tr><td rowspan="${used1 > 0 ? 4 : 2}">사업외수익</td><td rowspan="2">고유목적사업준비금II 전입수입</td><td></td><td class="right">${fmtNum(used2)}</td><td></td></tr>
+    <tr><td></td><td class="right">${fmtNum(used2)}</td><td class="left">출연금(${fmtNum(fund)}) × 80%</td></tr>
+    ${used1 > 0 ? `<tr><td rowspan="2">고유목적사업준비금I 전입수입</td><td></td><td class="right">${fmtNum(used1)}</td><td></td></tr>
+    <tr><td></td><td class="right">${fmtNum(used1)}</td><td class="left">지출 부족분 전입 (한도: 이자수익 ${fmtNum(interest)})</td></tr>` : ''}
     <tr class="subtotal-row"><td colspan="3"><b>합 계</b></td><td class="right"><b>${fmtNum(totalIncome)}</b></td><td></td></tr>
   </table>
 
@@ -25215,6 +25223,7 @@ function genPlanDetail(ctx){
   <br>
   <div class="doc-article" style="font-size:12px;">3) 수지차액</div>
   <div class="doc-body">수익 - 비용 = ${fmtNum(totalIncome)} - ${fmtNum(totalExpense)} = ${fmtNum(surplus)} (고유목적사업준비금I 설정계획)</div>
+  ${shortage > 0 ? `<div class="no-print" style="margin-top:6px;font-size:11px;color:#e00;">※ 경고: 지출계획(${fmtNum(totalExpense)})이 가용재원(보통재산+이자수익 = ${fmtNum(fund80 + interest)})을 초과합니다. 목적사업비 또는 일반관리비를 조정하세요.</div>` : ''}
 
   <br>
   <div class="doc-article">라. 목적사업계획서 수립</div>
@@ -25260,13 +25269,13 @@ function genBudgetPL(ctx){
   let plOpFee = plAdmin.opFee;
   let plReserve = plAdmin.reserve;
   let admin = plOpFee + plReserve;
-  let opLoss = -(biz+admin); // 목적사업 사업이익(적자)
-  let gop1 = intR; // 준비금1 = 이자수익
-  let gop2used = f80; // 준비금2 환입 = 보통재산 전액
+  // [v5.2] 사용액만 전입 방식: 지출 예정액만 목적사업회계로 전입(준비금2 우선, 부족분만 준비금1).
+  //        잔여 이자수익은 기금관리회계의 준비금1 전입비용(설정)으로만 계상 — 목적사업회계 잉여금 재설정 없음.
+  let gop2used = Math.min(biz + admin, f80);                     // 준비금2 전입수입(사용액)
+  let gop1 = Math.min(Math.max(biz + admin - f80, 0), intR);     // 준비금1 전입수입(부족분만)
   let gopTotal = gop1 + gop2used;
-  // 잉여금 = 사업외수익 - (사업비+관리비) → 고유목적사업준비금 설정으로 0 처리
-  let plSurplus = gopTotal - (biz + admin); // 목적사업회계 잉여금
-  let gopSetting = plSurplus > 0 ? plSurplus : 0; // 준비금 설정액
+  let netPurpose = gopTotal - (biz + admin); // 목적사업회계 순이익: 정상 0, 재원 부족 시 음수
+  let dNet = netPurpose < 0 ? 'Δ' + fmtNum(-netPurpose) : fmtNum(netPurpose);
   let f = fmtNum;
   let h = `
   <div style="page-break-before:always;padding-top:80px;">
@@ -25287,12 +25296,11 @@ function genBudgetPL(ctx){
     <tr class="section-row"><td>VI.</td><td class="left">사업외수익</td><td class="right">${f(gopTotal)}</td><td class="right">0</td><td class="right">${f(gopTotal)}</td></tr>
     <tr><td>　1.</td><td class="left">고유목적사업준비금1 전입수입</td><td class="right">${f(gop1)}</td><td class="right">0</td><td class="right">${f(gop1)}</td></tr>
     <tr><td>　2.</td><td class="left">고유목적사업준비금2 전입수입</td><td class="right">${f(gop2used)}</td><td class="right">0</td><td class="right">${f(gop2used)}</td></tr>
-    <tr class="section-row"><td>VII.</td><td class="left">사업외비용</td><td class="right">${f(gopSetting)}</td><td class="right">${f(gop1)}</td><td class="right">${f(gopSetting + gop1)}</td></tr>
-    <tr><td>　1.</td><td class="left">고유목적사업준비금1 전입비용</td><td class="right">0</td><td class="right">${f(gop1)}</td><td class="right">${f(gop1)}</td></tr>
-    <tr><td>　2.</td><td class="left">고유목적사업준비금 설정액</td><td class="right">${f(gopSetting)}</td><td class="right">0</td><td class="right">${f(gopSetting)}</td></tr>
-    <tr class="subtotal-row"><td>VIII.</td><td class="left">법인세차감전순이익</td><td class="right">0</td><td class="right">0</td><td class="right">0</td></tr>
+    <tr class="section-row"><td>VII.</td><td class="left">사업외비용</td><td class="right">0</td><td class="right">${f(intR)}</td><td class="right">${f(intR)}</td></tr>
+    <tr><td>　1.</td><td class="left">고유목적사업준비금1 전입비용</td><td class="right">0</td><td class="right">${f(intR)}</td><td class="right">${f(intR)}</td></tr>
+    <tr class="subtotal-row"><td>VIII.</td><td class="left">법인세차감전순이익</td><td class="right">${dNet}</td><td class="right">0</td><td class="right">${dNet}</td></tr>
     <tr><td>IX.</td><td class="left">법인세등</td><td class="right">0</td><td class="right">0</td><td class="right">0</td></tr>
-    <tr class="subtotal-row"><td></td><td class="left"><b>당기순이익</b></td><td class="right"><b>0</b></td><td class="right"><b>0</b></td><td class="right"><b>0</b></td></tr>
+    <tr class="subtotal-row"><td></td><td class="left"><b>당기순이익</b></td><td class="right"><b>${dNet}</b></td><td class="right"><b>0</b></td><td class="right"><b>${dNet}</b></td></tr>
   </table>
   </div>
   `;
@@ -25617,6 +25625,15 @@ function genChecklist(ctx){
 
 
 // ==================== 인쇄 기능 ====================
+// [v5.2] 인쇄(PDF 저장) 시 브라우저가 머리글에 문서 제목("...설립서류 생성기")을 찍지 않도록
+//        인쇄 직전 제목을 공백(NBSP)으로 바꾸고 인쇄 후 복원한다. (window.print()와 Ctrl+P 모두 적용)
+var _printSavedTitle = null;
+window.addEventListener('beforeprint', function(){
+  if(_printSavedTitle === null){ _printSavedTitle = document.title; document.title = '​'; }
+});
+window.addEventListener('afterprint', function(){
+  if(_printSavedTitle !== null){ document.title = _printSavedTitle; _printSavedTitle = null; }
+});
 function printAll(){
   document.querySelectorAll('.tab-pane').forEach(function(p){ p.style.display='block'; });
   window.print();
@@ -25847,7 +25864,10 @@ function exportWord(mode){
   var items = getBizItems(), adminFees = getAdminFees();
   var totalBiz = 0; items.forEach(function(it){totalBiz+=it.amount;});
   var opFee=adminFees.opFee, reserve=adminFees.reserve, totalAdmin=opFee+reserve;
-  var totalExpense=totalBiz+totalAdmin, gopIncome=f80, totalIncome=interest+gopIncome, surplus=totalIncome-totalExpense;
+  var totalExpense=totalBiz+totalAdmin;
+  // [v5.2] 사용액만 전입: 준비금2(보통재산)부터 전입, 부족분만 준비금1(이자)에서 전입
+  var used2=Math.min(totalExpense,f80), used1=Math.min(Math.max(totalExpense-f80,0),interest);
+  var gopIncome=used1+used2, totalIncome=interest+gopIncome, surplus=totalIncome-totalExpense;
 
   // ===== 헬퍼 함수 =====
   var BORDER = {style:D.BorderStyle.SINGLE, size:1, color:'333333'};
@@ -26136,9 +26156,8 @@ function exportWord(mode){
   // 추정재무상태표 요약
   var gopA=interest, gopB=f80;
   var totalAssetBS=fund+interest, totalLiab=gopA+gopB, totalCap=f20;
-  var gopSetting = Math.max(0, (gopA+gopB) - (totalBiz+totalAdmin));
-  // 요약 추정손익계산서: 상세 추정손익계산서의 계 합계와 일치 (당기순이익 0 구조)
-  var plCost = totalExpense + gopSetting + interest, plIncome = totalIncome + interest, plNet = plIncome - plCost;
+  // 요약 추정손익계산서: 상세 추정손익계산서의 계 합계와 일치 (당기순이익 0 구조, 사용액만 전입)
+  var plCost = totalExpense + interest, plIncome = totalIncome, plNet = plIncome - plCost;
 
   // 비용예산 행
   var expCw=[1100,1300,1800,1500,2236];
@@ -26248,10 +26267,14 @@ function exportWord(mode){
       var rows=[hdr,
         new D.TableRow({children:[cell('사업수익',{width:cw[0],center:true,rowSpan:2}),cell('이자수익',{width:cw[1],center:true,rowSpan:2}),dCell('',{width:cw[2]}),rCell(fmtNum(interest),{width:cw[3]}),dCell('',{width:cw[4]})]}),
         new D.TableRow({children:[dCell('예금이자',{width:cw[2]}),rCell(fmtNum(interest),{width:cw[3]}),lCell('기본재산('+fmtNum(f20)+') × 2%',{width:cw[4]})]}),
-        new D.TableRow({children:[cell('사업외수익',{width:cw[0],center:true,rowSpan:2}),cell('고유목적사업준비금II 전입수입',{width:cw[1],center:true,rowSpan:2}),dCell('',{width:cw[2]}),rCell(fmtNum(gopIncome),{width:cw[3]}),dCell('',{width:cw[4]})]}),
-        new D.TableRow({children:[dCell('',{width:cw[2]}),rCell(fmtNum(gopIncome),{width:cw[3]}),lCell('출연금('+fmtNum(fund)+') × 80%',{width:cw[4]})]}),
-        new D.TableRow({children:[secCell('합 계',{colSpan:3,bg:'FFF8E1',width:cw[0]+cw[1]+cw[2]}),rCell(fmtNum(totalIncome),{bg:'FFF8E1',bold:true,width:cw[3]}),dCell('',{bg:'FFF8E1',width:cw[4]})]})
+        new D.TableRow({children:[cell('사업외수익',{width:cw[0],center:true,rowSpan:(used1>0?4:2)}),cell('고유목적사업준비금II 전입수입',{width:cw[1],center:true,rowSpan:2}),dCell('',{width:cw[2]}),rCell(fmtNum(used2),{width:cw[3]}),dCell('',{width:cw[4]})]}),
+        new D.TableRow({children:[dCell('',{width:cw[2]}),rCell(fmtNum(used2),{width:cw[3]}),lCell('출연금('+fmtNum(fund)+') × 80%',{width:cw[4]})]})
       ];
+      if(used1>0){
+        rows.push(new D.TableRow({children:[cell('고유목적사업준비금I 전입수입',{width:cw[1],center:true,rowSpan:2}),dCell('',{width:cw[2]}),rCell(fmtNum(used1),{width:cw[3]}),dCell('',{width:cw[4]})]}));
+        rows.push(new D.TableRow({children:[dCell('',{width:cw[2]}),rCell(fmtNum(used1),{width:cw[3]}),lCell('지출 부족분 전입 (한도: 이자수익 '+fmtNum(interest)+')',{width:cw[4]})]}));
+      }
+      rows.push(new D.TableRow({children:[secCell('합 계',{colSpan:3,bg:'FFF8E1',width:cw[0]+cw[1]+cw[2]}),rCell(fmtNum(totalIncome),{bg:'FFF8E1',bold:true,width:cw[3]}),dCell('',{bg:'FFF8E1',width:cw[4]})]}));
       return new D.Table({width:{size:tw,type:D.WidthType.DXA},columnWidths:cw,rows:rows});
     })(),
     para('2) 비용예산',{size:10,bold:true,before:200,line:276}),
@@ -26295,7 +26318,10 @@ function exportWord(mode){
   if(include('plan')) sections.push({properties:PAGE_COMPACT, children:detailChildren2});
 
   // <추정재무상태표> (새 페이지)
-  var gopTotal=gopA+gopB;
+  // [v5.2] 상세 추정손익계산서용: 사용액만 전입 방식
+  var gopTotal=used1+used2;
+  var netP=gopTotal-(totalBiz+totalAdmin); // 목적사업회계 순이익: 정상 0, 재원 부족 시 음수
+  var dNetP=netP<0?'Δ'+fmtNum(-netP):fmtNum(netP);
   var bsRows2 = [
     [secCell(''),secCell('<<자산>>'),dCell('',{bg:'F2F7ED'}),dCell('',{bg:'F2F7ED'}),dCell('',{bg:'F2F7ED'})],
     [secCell('I.'),secCell('유동자산'),rCell('0',{bg:'FFF8E1'}),rCell(fmtNum(totalAssetBS),{bg:'FFF8E1'}),rCell(fmtNum(totalAssetBS),{bg:'FFF8E1'})],
@@ -26338,14 +26364,13 @@ function exportWord(mode){
     [dCell('\u30002.'),lCell('예비비'),rCell(fmtNum(reserve)),rCell('0'),rCell(fmtNum(reserve))],
     [secCell('V.'),secCell('사업이익(손실)'),rCell('Δ'+fmtNum(totalBiz+totalAdmin),{bg:'FFF8E1'}),rCell(fmtNum(interest),{bg:'FFF8E1'}),rCell('Δ'+fmtNum(totalBiz+totalAdmin-interest),{bg:'FFF8E1'})],
     [secCell('VI.'),secCell('사업외수익'),rCell(fmtNum(gopTotal),{bg:'F2F7ED'}),rCell('0',{bg:'F2F7ED'}),rCell(fmtNum(gopTotal),{bg:'F2F7ED'})],
-    [dCell('\u30001.'),lCell('고유목적사업준비금1 전입수입'),rCell(fmtNum(gopA)),rCell('0'),rCell(fmtNum(gopA))],
-    [dCell('\u30002.'),lCell('고유목적사업준비금2 전입수입'),rCell(fmtNum(gopB)),rCell('0'),rCell(fmtNum(gopB))],
-    [secCell('VII.'),secCell('사업외비용'),rCell(fmtNum(gopSetting),{bg:'F2F7ED'}),rCell(fmtNum(gopA),{bg:'F2F7ED'}),rCell(fmtNum(gopSetting+gopA),{bg:'F2F7ED'})],
-    [dCell('\u30001.'),lCell('고유목적사업준비금1 전입비용'),rCell('0'),rCell(fmtNum(gopA)),rCell(fmtNum(gopA))],
-    [dCell('\u30002.'),lCell('고유목적사업준비금 설정액'),rCell(fmtNum(gopSetting)),rCell('0'),rCell(fmtNum(gopSetting))],
-    [secCell('VIII.'),secCell('법인세차감전순이익'),rCell('0',{bg:'FFF8E1'}),rCell('0',{bg:'FFF8E1'}),rCell('0',{bg:'FFF8E1'})],
+    [dCell('\u30001.'),lCell('고유목적사업준비금1 전입수입'),rCell(fmtNum(used1)),rCell('0'),rCell(fmtNum(used1))],
+    [dCell('\u30002.'),lCell('고유목적사업준비금2 전입수입'),rCell(fmtNum(used2)),rCell('0'),rCell(fmtNum(used2))],
+    [secCell('VII.'),secCell('사업외비용'),rCell('0',{bg:'F2F7ED'}),rCell(fmtNum(interest),{bg:'F2F7ED'}),rCell(fmtNum(interest),{bg:'F2F7ED'})],
+    [dCell('\u30001.'),lCell('고유목적사업준비금1 전입비용'),rCell('0'),rCell(fmtNum(interest)),rCell(fmtNum(interest))],
+    [secCell('VIII.'),secCell('법인세차감전순이익'),rCell(dNetP,{bg:'FFF8E1'}),rCell('0',{bg:'FFF8E1'}),rCell(dNetP,{bg:'FFF8E1'})],
     [dCell('IX.'),lCell('법인세등'),rCell('0'),rCell('0'),rCell('0')],
-    [secCell(''),secCell('당기순이익',{bg:'FFF8E1',bold:true}),rCell('0',{bg:'FFF8E1',bold:true}),rCell('0',{bg:'FFF8E1',bold:true}),rCell('0',{bg:'FFF8E1',bold:true})]
+    [secCell(''),secCell('당기순이익',{bg:'FFF8E1',bold:true}),rCell(dNetP,{bg:'FFF8E1',bold:true}),rCell('0',{bg:'FFF8E1',bold:true}),rCell(dNetP,{bg:'FFF8E1',bold:true})]
   ]);
   if(include('plan')) sections.push({properties:PAGE_COMPACT, children:[
     title('<추정손익계산서>',18,60),
